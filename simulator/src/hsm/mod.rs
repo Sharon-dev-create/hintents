@@ -20,9 +20,11 @@ use thiserror::Error;
 #[async_trait]
 pub trait Signer: Send + Sync {
     /// Sign the provided data and return a signature
+    #[must_use = "signing only happens when the returned future is awaited"]
     async fn sign(&self, data: &[u8]) -> Result<Signature, SignerError>;
 
     /// Get the public key corresponding to the signing key
+    #[must_use = "the public key is only fetched when the returned future is awaited"]
     async fn public_key(&self) -> Result<PublicKey, SignerError>;
 
     /// Get information about the signer implementation
