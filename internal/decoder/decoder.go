@@ -121,11 +121,16 @@ func populateDiagnosticFields(event *DecodedEvent, topics []xdr.ScVal, data *xdr
 			break
 		}
 	}
-	if len(topics) > 1 && topics[0].Sym != nil && topics[1].Sym != nil {
-		switch string(*topics[0].Sym) {
-		case "fn_call", "fn_return", "log":
-			event.ContractFunction = string(*topics[1].Sym)
+	functionIndex := 1
+	if event.topicSymbol == "fn_call" && len(topics) > 2 && topics[1].Type == xdr.ScValTypeScvBytes {
+		// Host calls include the callee's contract ID before the function name.
+		functionIndex = 2
+		if topics[1].Bytes != nil {
+			event.ContractID = hex.EncodeToString(*topics[1].Bytes)
 		}
+	}
+	if (event.topicSymbol == "fn_call" || event.topicSymbol == "fn_return") && len(topics) > functionIndex && topics[functionIndex].Sym != nil {
+		event.ContractFunction = string(*topics[functionIndex].Sym)
 	}
 	if data == nil {
 		return
@@ -146,18 +151,20 @@ func buildCallTree(events []DecodedEvent, maxDepth int) (*CallNode, error) {
 	root := &CallNode{ContractID: "ROOT", Function: "TOP_LEVEL"}
 	current := root
 	currentDepth := 0
+	skippedDepth := 0
 	for _, decoded := range events {
 		if decoded.ContractFunction == "" && current != root && !isFunctionCall(decoded) && !isFunctionReturn(decoded) {
 			decoded.ContractFunction = current.Function
 		}
 
 		if isFunctionCall(decoded) {
-			if maxDepth > 0 && currentDepth >= maxDepth {
+			if skippedDepth > 0 || (maxDepth > 0 && currentDepth >= maxDepth) {
+				skippedDepth++
 				// Depth limit reached. Truncate this branch.
 				// Add a warning event to the current node if not already present
 				hasWarning := false
 				for _, e := range current.Events {
-					if e.Topics[0] == "warning" && e.Data == "Max trace depth reached; branch truncated" {
+					if len(e.Topics) > 0 && e.Topics[0] == "warning" && e.Data == "Max trace depth reached; branch truncated" {
 						hasWarning = true
 						break
 					}
@@ -188,8 +195,9 @@ func buildCallTree(events []DecodedEvent, maxDepth int) (*CallNode, error) {
 			currentDepth++
 			current.Events = append(current.Events, decoded)
 		} else if isFunctionReturn(decoded) {
-			if maxDepth > 0 && currentDepth >= maxDepth {
+			if skippedDepth > 0 {
 				// We skipped the corresponding call, so we must skip the return.
+				skippedDepth--
 				continue
 			}
 
