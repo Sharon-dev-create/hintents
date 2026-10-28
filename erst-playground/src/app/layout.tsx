@@ -2,11 +2,27 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React from 'react';
+import { Inter_Tight, JetBrains_Mono } from 'next/font/google';
+import './globals.css';
+
+const interTight = Inter_Tight({
+  subsets: ['latin'],
+  variable: '--font-sans',
+  display: 'swap',
+});
+
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ['latin'],
+  variable: '--font-mono',
+  display: 'swap',
+});
 
 export const metadata = {
-  title: 'Erst Playground - Interactive Soroban Environment',
+  title: 'Erst Playground — Interactive Soroban Environment',
   description: 'Write, compile, and simulate Stellar Soroban smart contracts directly in the browser.',
 };
+
+const THEME_INIT_SCRIPT = `(function(){try{var t=localStorage.getItem('erst-theme');if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}})();`;
 
 export default function RootLayout({
   children,
@@ -14,8 +30,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
-      <body style={{ margin: 0, padding: 0, backgroundColor: '#09090b', color: '#fafafa', fontFamily: 'Inter, sans-serif' }}>
+    <html lang="en" className={`${interTight.variable} ${jetbrainsMono.variable}`}>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
+      <body>
         {children}
       </body>
     </html>

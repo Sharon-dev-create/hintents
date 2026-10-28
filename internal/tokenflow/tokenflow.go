@@ -168,12 +168,19 @@ func extractSACTransfersAndMints(resultMetaXdrB64 string) ([]Transfer, error) {
 		return nil, fmt.Errorf("decode result_meta xdr base64: %w", err)
 	}
 
-	var rm xdr.TransactionResultMeta
-	if err = xdr.SafeUnmarshal(metaBytes, &rm); err != nil {
-		return nil, fmt.Errorf("unmarshal TransactionResultMeta: %w", err)
+	// resultMetaXdrB64 is typically Horizon's result_meta_xdr (TransactionMeta),
+	// but may also be wrapped in TransactionResultMeta (stellar-core / tests).
+	var tm xdr.TransactionMeta
+	if err = xdr.SafeUnmarshal(metaBytes, &tm); err != nil {
+		var rm xdr.TransactionResultMeta
+		if errRM := xdr.SafeUnmarshal(metaBytes, &rm); errRM == nil {
+			tm = rm.TxApplyProcessing
+		} else {
+			return nil, fmt.Errorf("unmarshal TransactionMeta: %w", err)
+		}
 	}
 
-	diag := extractDiagnosticEvents(rm.TxApplyProcessing)
+	diag := extractDiagnosticEvents(tm)
 	var out []Transfer
 
 	for _, de := range diag {

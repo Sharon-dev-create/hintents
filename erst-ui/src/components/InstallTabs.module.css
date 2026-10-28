@@ -1,0 +1,67 @@
+.tabList {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  padding: 0.3rem;
+  margin-bottom: 1.25rem;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 0.9rem;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 150ms var(--ease-out);
+}
+
+.tab[aria-selected='true'] {
+  color: var(--text);
+}
+
+.tabDisabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.indicator {
+  position: absolute;
+  inset: 0;
+  background-color: var(--surface-hover);
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  z-index: 0;
+}
+
+.tabLabel,
+.tabBadge {
+  position: relative;
+  z-index: 1;
+}
+
+.tabBadge {
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.1rem 0.4rem;
+  border-radius: 9999px;
+  background-color: var(--warning-dim);
+  color: var(--warning);
+}
+
+.note {
+  margin-top: 0.75rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}

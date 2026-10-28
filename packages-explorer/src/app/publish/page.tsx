@@ -23,17 +23,17 @@ export default function PublishDashboard() {
         {/* Progress Sidebar */}
         <div className="md:col-span-1 space-y-6">
           <div className={`flex items-center gap-3 ${step >= 1 ? 'text-zinc-100' : 'text-zinc-600'}`}>
-            <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm ${step >= 1 ? 'bg-zinc-100 text-zinc-900' : 'bg-zinc-800'}`}>1</div>
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm ${step >= 1 ? 'bg-accent text-[var(--accent-foreground)]' : 'bg-zinc-800'}`}>1</div>
             <span className="font-medium">Identify Contract</span>
           </div>
           <div className="w-0.5 h-6 bg-zinc-800 ml-4"></div>
           <div className={`flex items-center gap-3 ${step >= 2 ? 'text-zinc-100' : 'text-zinc-600'}`}>
-            <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm ${step >= 2 ? 'bg-zinc-100 text-zinc-900' : 'bg-zinc-800'}`}>2</div>
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm ${step >= 2 ? 'bg-accent text-[var(--accent-foreground)]' : 'bg-zinc-800'}`}>2</div>
             <span className="font-medium">Verify Ownership</span>
           </div>
           <div className="w-0.5 h-6 bg-zinc-800 ml-4"></div>
           <div className={`flex items-center gap-3 ${step >= 3 ? 'text-zinc-100' : 'text-zinc-600'}`}>
-            <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm ${step >= 3 ? 'bg-zinc-100 text-zinc-900' : 'bg-zinc-800'}`}>3</div>
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm ${step >= 3 ? 'bg-accent text-[var(--accent-foreground)]' : 'bg-zinc-800'}`}>3</div>
             <span className="font-medium">Link Source</span>
           </div>
         </div>
@@ -72,7 +72,7 @@ export default function PublishDashboard() {
 
               <button 
                 onClick={() => setStep(2)}
-                className="w-full py-3 bg-zinc-100 text-zinc-900 hover:bg-white rounded-lg font-bold transition-colors mt-4"
+                className="w-full py-3 bg-accent text-[var(--accent-foreground)] hover:bg-accent-strong rounded-lg font-bold transition-colors mt-4"
               >
                 Continue
               </button>
@@ -134,7 +134,7 @@ export default function PublishDashboard() {
                 >
                   Back
                 </button>
-                <Link href="/" className="flex-1 py-3 bg-zinc-100 text-zinc-900 hover:bg-white text-center rounded-lg font-bold transition-colors">
+                <Link href="/" className="flex-1 py-3 bg-accent text-[var(--accent-foreground)] hover:bg-accent-strong text-center rounded-lg font-bold transition-colors">
                   Publish Package
                 </Link>
               </div>

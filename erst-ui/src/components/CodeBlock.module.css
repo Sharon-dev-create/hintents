@@ -1,0 +1,62 @@
+.block {
+  position: relative;
+  background-color: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.pre {
+  margin: 0;
+  padding: 1.25rem 3.25rem 1.25rem 1.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  line-height: 1.7;
+  overflow-x: auto;
+  color: var(--text);
+}
+
+.line {
+  white-space: pre;
+}
+
+.comment {
+  white-space: pre;
+  color: var(--text-muted);
+  margin-top: 0.5rem;
+}
+
+.comment:first-child {
+  margin-top: 0;
+}
+
+.prompt {
+  color: var(--text-muted);
+  margin-right: 0.75rem;
+  user-select: none;
+}
+
+.copyButton {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background-color: var(--surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color 150ms var(--ease-out), color 150ms var(--ease-out), border-color 150ms var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .copyButton:hover {
+    background-color: var(--surface-hover);
+    color: var(--text);
+    border-color: var(--border-strong);
+  }
+}

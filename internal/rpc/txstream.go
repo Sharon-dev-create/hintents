@@ -766,16 +766,31 @@ type rpcGetTxParams struct {
 	Hash string `json:"hash"`
 }
 
+// flexibleInt64 unmarshals a JSON number or a quoted numeric string into an
+// int64. Soroban RPC returns createdAt as a quoted string (e.g. "1793222215")
+// rather than a bare number.
+type flexibleInt64 int64
+
+func (f *flexibleInt64) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.Trim(data, `"`)
+	var v int64
+	if _, err := fmt.Sscanf(string(trimmed), "%d", &v); err != nil {
+		return fmt.Errorf("flexibleInt64: %w", err)
+	}
+	*f = flexibleInt64(v)
+	return nil
+}
+
 // sorobanGetTxResult maps the full Soroban RPC getTransaction result object.
 type sorobanGetTxResult struct {
-	Status           string `json:"status"`
-	Ledger           int64  `json:"ledger,omitempty"`
-	EnvelopeXdr      string `json:"envelopeXdr,omitempty"`
-	ResultXdr        string `json:"resultXdr,omitempty"`
-	ResultMetaXdr    string `json:"resultMetaXdr,omitempty"`
-	ApplicationOrder int64  `json:"applicationOrder,omitempty"`
-	LatestLedger     int64  `json:"latestLedger,omitempty"`
-	CreatedAt        int64  `json:"createdAt,omitempty"`
+	Status           string        `json:"status"`
+	Ledger           int64         `json:"ledger,omitempty"`
+	EnvelopeXdr      string        `json:"envelopeXdr,omitempty"`
+	ResultXdr        string        `json:"resultXdr,omitempty"`
+	ResultMetaXdr    string        `json:"resultMetaXdr,omitempty"`
+	ApplicationOrder int64         `json:"applicationOrder,omitempty"`
+	LatestLedger     int64         `json:"latestLedger,omitempty"`
+	CreatedAt        flexibleInt64 `json:"createdAt,omitempty"`
 }
 
 type jsonrpcResponse struct {
@@ -806,6 +821,6 @@ func decodeTxStatus(hash string, resp *jsonrpcResponse) TxStatus {
 		ResultMetaXdr:    resp.Result.ResultMetaXdr,
 		ApplicationOrder: resp.Result.ApplicationOrder,
 		LatestLedger:     resp.Result.LatestLedger,
-		CreatedAt:        resp.Result.CreatedAt,
+		CreatedAt:        int64(resp.Result.CreatedAt),
 	}
 }

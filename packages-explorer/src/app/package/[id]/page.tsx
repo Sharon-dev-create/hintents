@@ -39,7 +39,7 @@ export default function PackageDetail({ params }: { params: { id: string } }) {
           <div className="flex items-center gap-3 mb-2">
             <h1 className="text-3xl font-bold">{PACKAGE_DATA.name}</h1>
             {PACKAGE_DATA.verified && (
-              <span className="flex items-center gap-1 px-2 py-1 rounded bg-blue-500/10 text-blue-400 text-xs font-medium border border-blue-500/20">
+              <span className="flex items-center gap-1 px-2 py-1 rounded bg-accent-dim text-accent-strong text-xs font-medium border border-accent/20">
                 <ShieldCheck size={14} /> Verified Source
               </span>
             )}
@@ -56,9 +56,14 @@ export default function PackageDetail({ params }: { params: { id: string } }) {
         </div>
         
         <div className="flex gap-3">
-          <button className="px-6 py-2 bg-zinc-100 text-zinc-900 hover:bg-white rounded-lg font-medium transition-colors">
+          <a
+            href={`${process.env.NEXT_PUBLIC_PLAYGROUND_URL || 'https://playground.erstt.xyz'}/?contract=${encodeURIComponent(PACKAGE_DATA.id)}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="px-6 py-2 bg-accent text-[var(--accent-foreground)] hover:bg-accent-strong rounded-lg font-medium transition-colors inline-flex items-center"
+          >
             Use in Playground
-          </button>
+          </a>
         </div>
       </div>
 
@@ -67,19 +72,19 @@ export default function PackageDetail({ params }: { params: { id: string } }) {
         <div className="flex gap-8">
           <button 
             onClick={() => setActiveTab('abi')}
-            className={`pb-4 text-sm font-medium transition-colors border-b-2 ${activeTab === 'abi' ? 'border-zinc-100 text-zinc-100' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
+            className={`pb-4 text-sm font-medium transition-colors border-b-2 ${activeTab === 'abi' ? 'border-accent-strong text-[var(--text)]' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
           >
             <div className="flex items-center gap-2"><Box size={16}/> ABI & Functions</div>
           </button>
           <button 
             onClick={() => setActiveTab('source')}
-            className={`pb-4 text-sm font-medium transition-colors border-b-2 ${activeTab === 'source' ? 'border-zinc-100 text-zinc-100' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
+            className={`pb-4 text-sm font-medium transition-colors border-b-2 ${activeTab === 'source' ? 'border-accent-strong text-[var(--text)]' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
           >
             <div className="flex items-center gap-2"><Code2 size={16}/> Source Code</div>
           </button>
           <button 
             onClick={() => setActiveTab('metrics')}
-            className={`pb-4 text-sm font-medium transition-colors border-b-2 ${activeTab === 'metrics' ? 'border-zinc-100 text-zinc-100' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
+            className={`pb-4 text-sm font-medium transition-colors border-b-2 ${activeTab === 'metrics' ? 'border-accent-strong text-[var(--text)]' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
           >
             <div className="flex items-center gap-2"><Activity size={16}/> Metrics</div>
           </button>

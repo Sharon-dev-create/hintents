@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 
 	"github.com/dotandev/hintents/internal/errors"
-	"github.com/dotandev/hintents/internal/types"
 	"github.com/dotandev/hintents/internal/state"
 	hProtocol "github.com/stellar/go-stellar-sdk/protocols/horizon"
 	"github.com/stellar/go-stellar-sdk/xdr"
@@ -76,7 +75,8 @@ func EncodeLedgerEntry(entry xdr.LedgerEntry) (string, error) {
 	return base64.StdEncoding.EncodeToString(xdrBytes), nil
 }
 
-// ExtractLedgerEntriesFromMeta extracts ledger entries from TransactionResultMeta
+// ExtractLedgerEntriesFromMeta extracts ledger entries from a TransactionMeta
+// (Horizon's result_meta_xdr field decodes directly to this type).
 // This provides the state that was present when the transaction executed
 func ExtractLedgerEntriesFromMeta(resultMetaXDR string) (map[string]string, error) {
 	// Decode the result meta XDR
@@ -85,27 +85,31 @@ func ExtractLedgerEntriesFromMeta(resultMetaXDR string) (map[string]string, erro
 		return nil, errors.WrapUnmarshalFailed(err, "result meta")
 	}
 
-	var resultMeta xdr.TransactionResultMeta
-	if err := resultMeta.UnmarshalBinary(metaBytes); err != nil {
-		return nil, errors.WrapUnmarshalFailed(err, "result meta binary")
+	var meta xdr.TransactionMeta
+	if err := meta.UnmarshalBinary(metaBytes); err != nil {
+		var resultMeta xdr.TransactionResultMeta
+		if errRM := resultMeta.UnmarshalBinary(metaBytes); errRM == nil {
+			meta = resultMeta.TxApplyProcessing
+		} else {
+			return nil, errors.WrapUnmarshalFailed(err, "result meta binary")
+		}
 	}
 
 	entries := make(map[string]string)
 
-	// Extract entries from TransactionMeta
-	switch resultMeta.TxApplyProcessing.V {
+	switch meta.V {
 	case 0:
-		if resultMeta.TxApplyProcessing.Operations != nil {
-			extractFromLedgerEntryChanges(*resultMeta.TxApplyProcessing.Operations, entries)
+		if meta.Operations != nil {
+			extractFromLedgerEntryChanges(*meta.Operations, entries)
 		}
 
 	case 1:
-		if resultMeta.TxApplyProcessing.V1 != nil {
-			extractFromLedgerEntryChanges(resultMeta.TxApplyProcessing.V1.Operations, entries)
+		if meta.V1 != nil {
+			extractFromLedgerEntryChanges(meta.V1.Operations, entries)
 		}
 
 	case 2:
-		if v2 := resultMeta.TxApplyProcessing.V2; v2 != nil {
+		if v2 := meta.V2; v2 != nil {
 			extractFromLedgerEntryChanges(v2.Operations, entries)
 			// Also extract from TxChangesBefore and TxChangesAfter
 			extractFromChanges(v2.TxChangesBefore, entries)
@@ -113,7 +117,7 @@ func ExtractLedgerEntriesFromMeta(resultMetaXDR string) (map[string]string, erro
 		}
 
 	case 3:
-		if v3 := resultMeta.TxApplyProcessing.V3; v3 != nil {
+		if v3 := meta.V3; v3 != nil {
 			extractFromLedgerEntryChanges(v3.Operations, entries)
 			// Also extract from TxChangesBefore and TxChangesAfter
 			extractFromChanges(v3.TxChangesBefore, entries)
@@ -298,29 +302,34 @@ func ExtractPostStateLedgerEntries(resultMetaXDR string) (map[string]string, err
 		return nil, errors.WrapUnmarshalFailed(err, "result meta")
 	}
 
-	var resultMeta xdr.TransactionResultMeta
-	if err := resultMeta.UnmarshalBinary(metaBytes); err != nil {
-		return nil, errors.WrapUnmarshalFailed(err, "result meta binary")
+	var meta xdr.TransactionMeta
+	if err := meta.UnmarshalBinary(metaBytes); err != nil {
+		var resultMeta xdr.TransactionResultMeta
+		if errRM := resultMeta.UnmarshalBinary(metaBytes); errRM == nil {
+			meta = resultMeta.TxApplyProcessing
+		} else {
+			return nil, errors.WrapUnmarshalFailed(err, "result meta binary")
+		}
 	}
 
 	after := make(map[string]string)
 
-	switch resultMeta.TxApplyProcessing.V {
+	switch meta.V {
 	case 0:
-		if resultMeta.TxApplyProcessing.Operations != nil {
-			extractPostStateFromOperations(*resultMeta.TxApplyProcessing.Operations, after)
+		if meta.Operations != nil {
+			extractPostStateFromOperations(*meta.Operations, after)
 		}
 	case 1:
-		if v1 := resultMeta.TxApplyProcessing.V1; v1 != nil {
+		if v1 := meta.V1; v1 != nil {
 			extractPostStateFromOperations(v1.Operations, after)
 		}
 	case 2:
-		if v2 := resultMeta.TxApplyProcessing.V2; v2 != nil {
+		if v2 := meta.V2; v2 != nil {
 			extractPostStateFromOperations(v2.Operations, after)
 			extractPostStateFromChanges(v2.TxChangesAfter, after)
 		}
 	case 3:
-		if v3 := resultMeta.TxApplyProcessing.V3; v3 != nil {
+		if v3 := meta.V3; v3 != nil {
 			extractPostStateFromOperations(v3.Operations, after)
 			extractPostStateFromChanges(v3.TxChangesAfter, after)
 		}

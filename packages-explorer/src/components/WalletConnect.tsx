@@ -50,9 +50,9 @@ export default function WalletConnect() {
   };
 
   return (
-    <button 
+    <button
       onClick={connectWallet}
-      className="flex items-center gap-2 px-4 py-2 bg-[#27272a] hover:bg-[#3f3f46] transition-colors rounded-md text-sm text-[#fafafa] border border-[#3f3f46]"
+      className="flex items-center gap-2 px-4 py-2 bg-[var(--surface)] hover:bg-[var(--surface-hover)] transition-colors rounded-md text-sm text-[var(--text)] border border-[var(--border-strong)]"
     >
       <Wallet size={16} />
       {pubKey ? truncateKey(pubKey) : "Connect Wallet"}
