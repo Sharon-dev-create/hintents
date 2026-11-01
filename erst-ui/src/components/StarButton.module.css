@@ -1,0 +1,49 @@
+.starButton {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.7rem 0.4rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background-color: var(--surface);
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-decoration: none;
+  flex-shrink: 0;
+  transition: background-color 150ms var(--ease-out), color 150ms var(--ease-out), border-color 150ms var(--ease-out), transform 150ms var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .starButton:hover {
+    background-color: var(--surface-hover);
+    color: var(--text);
+    border-color: var(--border-strong);
+    transform: translateY(-1px);
+  }
+
+  .starButton:hover .starIcon {
+    color: var(--warning);
+    fill: var(--warning);
+  }
+}
+
+.label {
+  white-space: nowrap;
+}
+
+.divider {
+  width: 1px;
+  height: 1rem;
+  background-color: var(--border-strong);
+}
+
+.starIcon {
+  color: var(--text-muted);
+  transition: color 150ms var(--ease-out), fill 150ms var(--ease-out);
+}
+
+.count {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}

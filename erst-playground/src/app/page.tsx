@@ -3,8 +3,14 @@
 
 "use client";
 
-import React, { useState } from 'react';
-import Link from 'next/link';
+import React, { useEffect, useRef, useState } from 'react';
+import Editor, { type Monaco } from '@monaco-editor/react';
+import { motion, AnimatePresence } from 'motion/react';
+import { Play, Trash2 } from 'lucide-react';
+import StarButton from '@/components/StarButton';
+import ThemeToggle from '@/components/ThemeToggle';
+import Logo from '@/components/icons/Logo';
+import { duration, ease } from '@/lib/motion';
 import styles from './page.module.css';
 
 const DEFAULT_CODE = `// SPDX-License-Identifier: Apache-2.0
@@ -22,42 +28,96 @@ impl HelloContract {
 }
 `;
 
+type LogLevel = 'info' | 'success' | 'error' | 'warn';
+interface LogLine {
+  time: string;
+  level: LogLevel;
+  msg: string;
+}
+
+const LEVEL_CLASS: Record<LogLevel, string> = {
+  info: styles.termInfo,
+  success: styles.termSuccess,
+  error: styles.termError,
+  warn: styles.termWarn,
+};
+
+function defineErstTheme(monaco: Monaco) {
+  monaco.editor.defineTheme('erst-dark', {
+    base: 'vs-dark',
+    inherit: true,
+    rules: [
+      { token: 'comment', foreground: '6b7280', fontStyle: 'italic' },
+      { token: 'keyword', foreground: 'bef264' },
+      { token: 'string', foreground: 'a1a1aa' },
+      { token: 'number', foreground: 'a3e635' },
+      { token: 'type', foreground: '93c5fd' },
+      { token: 'identifier', foreground: 'f4f4f5' },
+    ],
+    colors: {
+      'editor.background': '#08090a',
+      'editor.foreground': '#f4f4f5',
+      'editor.lineHighlightBackground': '#141518',
+      'editorLineNumber.foreground': '#3f3f46',
+      'editorLineNumber.activeForeground': '#a1a1aa',
+      'editorCursor.foreground': '#a3e635',
+      'editor.selectionBackground': '#2dd4bf33',
+      'editorGutter.background': '#08090a',
+      'scrollbarSlider.background': '#ffffff14',
+      'scrollbarSlider.hoverBackground': '#ffffff22',
+    },
+  });
+}
+
 export default function Playground() {
   const [code, setCode] = useState(DEFAULT_CODE);
   const [isRunning, setIsRunning] = useState(false);
-  const [logs, setLogs] = useState<{time: string, level: string, msg: string}[]>([
-    { time: "00:00:00", level: "info", msg: "Playground initialized." },
-    { time: "00:00:00", level: "info", msg: "Ready for simulation." }
+  const [logs, setLogs] = useState<LogLine[]>([
+    { time: '00:00:00', level: 'info', msg: 'Playground initialized.' },
+    { time: '00:00:00', level: 'info', msg: 'Ready for simulation.' },
   ]);
+  const editorMounted = useRef(false);
+
+  const pushLog = (level: LogLevel, msg: string) => {
+    setLogs((prev) => [...prev, { time: new Date().toLocaleTimeString(), level, msg }]);
+  };
+
+  // Packages Explorer's "Use in Playground" button links here with
+  // ?contract=<id>. We don't store source for registry packages (yet), so
+  // rather than faking a prefill, we're upfront about what actually happened.
+  useEffect(() => {
+    const contract = new URLSearchParams(window.location.search).get('contract');
+    if (contract) {
+      pushLog('info', `Opened from registry: ${contract}`);
+      pushLog('warn', 'Source isn’t stored in the registry yet — paste or write the contract’s code below to simulate it.');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleRun = async () => {
     setIsRunning(true);
-    setLogs(prev => [...prev, { time: new Date().toLocaleTimeString(), level: "info", msg: "Compiling WASM target via Erst Backend..." }]);
-    
+    pushLog('info', 'Compiling WASM target via Erst Backend...');
+
     try {
       const apiUrl = process.env.NEXT_PUBLIC_COMPILER_URL || 'http://localhost:8080/api/compile';
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code })
+        body: JSON.stringify({ code }),
       });
-      
+
       const data = await response.json();
-      
+
       if (response.ok) {
-        setLogs(prev => [...prev, { time: new Date().toLocaleTimeString(), level: "success", msg: "Build successful." }]);
-        setLogs(prev => [...prev, { time: new Date().toLocaleTimeString(), level: "info", msg: `WASM binary generated (${data.wasmSize} bytes).` }]);
-        if (data.logs) {
-          setLogs(prev => [...prev, { time: new Date().toLocaleTimeString(), level: "info", msg: data.logs }]);
-        }
+        pushLog('success', 'Build successful.');
+        pushLog('info', `WASM binary generated (${data.wasmSize} bytes).`);
+        if (data.logs) pushLog('info', data.logs);
       } else {
-        setLogs(prev => [...prev, { time: new Date().toLocaleTimeString(), level: "error", msg: `Compilation failed: ${data.error}` }]);
-        if (data.details) {
-          setLogs(prev => [...prev, { time: new Date().toLocaleTimeString(), level: "error", msg: data.details }]);
-        }
+        pushLog('error', `Compilation failed: ${data.error}`);
+        if (data.details) pushLog('error', data.details);
       }
-    } catch (e: any) {
-      setLogs(prev => [...prev, { time: new Date().toLocaleTimeString(), level: "error", msg: `Network Error: Could not connect to compile server.` }]);
+    } catch {
+      pushLog('error', 'Network error: could not connect to the compile server.');
     } finally {
       setIsRunning(false);
     }
@@ -67,16 +127,20 @@ export default function Playground() {
     <div className={styles.container}>
       <header className={styles.header}>
         <div className={styles.title}>
-          <a href="https://erstt.xyz" style={{ color: 'inherit', textDecoration: 'none' }}>Erst.</a>
-          <span style={{ color: '#52525b', margin: '0 0.5rem' }}>/</span>
+          <span className={styles.brandIcon}><Logo size={18} /></span>
+          <a href="https://erstt.xyz" className={styles.brandLink}>Erst.</a>
+          <span className={styles.slash}>/</span>
           Playground <span className={styles.badge}>BETA</span>
         </div>
         <div className={styles.actions}>
-          <button className={styles.btnSecondary} onClick={() => setLogs([])}>Clear</button>
+          <ThemeToggle />
+          <StarButton repo="dotandev/hintents" />
+          <span className={styles.divider} aria-hidden="true" />
+          <button className={styles.btnSecondary} onClick={() => setLogs([])}>
+            <Trash2 size={13} /> Clear
+          </button>
           <button className={styles.btnRun} onClick={handleRun} disabled={isRunning}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-              <polygon points="5 3 19 12 5 21 5 3"></polygon>
-            </svg>
+            <Play size={13} fill="currentColor" />
             {isRunning ? 'Running...' : 'Run Simulation'}
           </button>
         </div>
@@ -85,36 +149,57 @@ export default function Playground() {
       <main className={styles.workspace}>
         <div className={styles.editorPane}>
           <div className={styles.paneHeader}>
-            src/lib.rs
+            <span>src/lib.rs</span>
+            <span className={styles.langBadge}>Rust</span>
           </div>
-          <textarea 
-            className={styles.editor}
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-            spellCheck={false}
-          />
+          <div className={styles.editorWrapper}>
+            <Editor
+              defaultLanguage="rust"
+              theme="erst-dark"
+              value={code}
+              onChange={(value) => setCode(value ?? '')}
+              beforeMount={defineErstTheme}
+              onMount={() => {
+                editorMounted.current = true;
+              }}
+              options={{
+                fontFamily: 'var(--font-mono)',
+                fontSize: 13,
+                minimap: { enabled: false },
+                scrollBeyondLastLine: false,
+                padding: { top: 16 },
+                smoothScrolling: true,
+                cursorBlinking: 'smooth',
+                automaticLayout: true,
+              }}
+            />
+          </div>
         </div>
         <div className={styles.outputPane}>
           <div className={styles.paneHeader}>
-            Terminal
+            <span>Terminal</span>
           </div>
           <div className={styles.terminal}>
-            {logs.map((log, i) => (
-              <div key={i} className={styles.termLine}>
-                <span className={styles.termTime}>[{log.time}]</span>
-                <span className={
-                  log.level === 'info' ? styles.termInfo :
-                  log.level === 'success' ? styles.termSuccess :
-                  log.level === 'error' ? styles.termError : styles.termWarn
-                }>
-                  {log.msg}
-                </span>
-              </div>
-            ))}
+            <AnimatePresence initial={false}>
+              {logs.map((log, i) => (
+                <motion.div
+                  key={`${log.time}-${i}`}
+                  className={styles.termLine}
+                  initial={{ opacity: 0, transform: 'translateY(4px)' }}
+                  animate={{ opacity: 1, transform: 'translateY(0px)' }}
+                  transition={{ duration: duration.fast, ease: ease.out }}
+                >
+                  <span className={styles.termTime}>[{log.time}]</span>
+                  <span className={LEVEL_CLASS[log.level]}>{log.msg}</span>
+                </motion.div>
+              ))}
+            </AnimatePresence>
             {isRunning && (
               <div className={styles.termLine}>
                 <span className={styles.termTime}>[{new Date().toLocaleTimeString()}]</span>
-                <span className={styles.termInfo}>...</span>
+                <span className={styles.termInfo}>
+                  <span className={styles.cursorBlink}>&#9608;</span>
+                </span>
               </div>
             )}
           </div>

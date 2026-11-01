@@ -4,7 +4,9 @@
 package rpc
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	stdErrors "errors"
 	"fmt"
 	"io"
@@ -174,7 +176,73 @@ func (c *Client) getTransactionAttempt(ctx context.Context, hash string) (txResp
 
 	logger.Logger.Debug("Transaction fetched", "hash", hash, "envelope_size", len(tx.EnvelopeXdr), "url", c.HorizonURL)
 
-	return ParseTransactionResponse(tx), nil
+	resp := ParseTransactionResponse(tx)
+
+	// Current public Horizon instances commonly no longer populate
+	// result_meta_xdr on /transactions/{hash} (metadata is being phased out
+	// of Horizon in favor of Soroban RPC). Fall back to Soroban RPC's
+	// getTransaction for the metadata when that happens, so ledger-key
+	// extraction and simulation still have something to work with.
+	if resp.ResultMetaXdr == "" && c.SorobanURL != "" {
+		if meta, metaErr := c.fetchResultMetaFromSorobanRPC(ctx, hash); metaErr == nil && meta != "" {
+			logger.Logger.Debug("Horizon result_meta_xdr was empty; used Soroban RPC fallback", "hash", hash)
+			resp.ResultMetaXdr = meta
+		} else if metaErr != nil {
+			logger.Logger.Debug("Soroban RPC result-meta fallback failed", "hash", hash, "error", metaErr)
+		}
+	}
+
+	return resp, nil
+}
+
+// fetchResultMetaFromSorobanRPC queries Soroban RPC's getTransaction method
+// for a transaction's result meta XDR. See the fallback in
+// getTransactionAttempt for why this exists.
+func (c *Client) fetchResultMetaFromSorobanRPC(ctx context.Context, hash string) (string, error) {
+	if c.SorobanURL == "" {
+		return "", fmt.Errorf("no Soroban RPC URL configured")
+	}
+
+	req := jsonrpcRequest{
+		Jsonrpc: "2.0",
+		ID:      1,
+		Method:  "getTransaction",
+		Params:  &rpcGetTxParams{Hash: hash},
+	}
+	reqBytes, err := json.Marshal(req)
+	if err != nil {
+		return "", fmt.Errorf("marshal getTransaction request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.SorobanURL, bytes.NewBuffer(reqBytes))
+	if err != nil {
+		return "", fmt.Errorf("create Soroban RPC request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	httpResp, err := c.getHTTPClient().Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("Soroban RPC request: %w", err)
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+
+	respBytes, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read Soroban RPC response: %w", err)
+	}
+
+	var rpcResp jsonrpcResponse
+	if err := json.Unmarshal(respBytes, &rpcResp); err != nil {
+		return "", fmt.Errorf("unmarshal Soroban RPC response: %w", err)
+	}
+	if rpcResp.Error != nil {
+		return "", fmt.Errorf("Soroban RPC error: %s", rpcResp.Error.Message)
+	}
+	if rpcResp.Result == nil || rpcResp.Result.ResultMetaXdr == "" {
+		return "", fmt.Errorf("Soroban RPC returned no result meta for %s", hash)
+	}
+
+	return rpcResp.Result.ResultMetaXdr, nil
 }
 
 // GetNetworkPassphrase returns the network passphrase for this client

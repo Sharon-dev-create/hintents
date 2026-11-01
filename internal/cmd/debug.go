@@ -368,8 +368,14 @@ Local WASM Replay Mode:
 					opts = append(opts, rpc.WithAltURLs(cfg.RpcUrls))
 					horizonURL = cfg.RpcUrls[0]
 				} else if cfg.RpcUrl != "" {
-					opts = append(opts, rpc.WithHorizonURL(cfg.RpcUrl))
-					horizonURL = cfg.RpcUrl
+					// cfg.RpcUrl is the Soroban RPC endpoint (its default is
+					// endpoints.SorobanTestnet, etc.) — NOT a Horizon URL.
+					// Feeding it to WithHorizonURL sends Horizon REST calls
+					// (e.g. GetTransaction) to the Soroban JSON-RPC endpoint
+					// instead, which breaks every default `erst debug <tx>`
+					// invocation. Leave horizonURL unset so it falls back to
+					// the client's real per-network default below.
+					opts = append(opts, rpc.WithSorobanURL(cfg.RpcUrl))
 				}
 				if cfg.FailureThreshold > 0 {
 					opts = append(opts, rpc.WithCircuitBreakerThreshold(cfg.FailureThreshold))
@@ -1187,7 +1193,12 @@ func extractLedgerKeys(metaXdr string) ([]string, error) {
 		return nil, err
 	}
 
-	var meta xdr.TransactionResultMeta
+	// Horizon's result_meta_xdr is a TransactionMeta value directly — NOT
+	// wrapped in a TransactionResultMeta (that type belongs to stellar-core's
+	// ledger-close-meta stream and starts with an unrelated TransactionResultPair,
+	// i.e. a 32-byte hash). Decoding as the wrapper type fails immediately on
+	// every real transaction.
+	var meta xdr.TransactionMeta
 	if err := xdr.SafeUnmarshal(data, &meta); err != nil {
 		return nil, err
 	}
@@ -1224,26 +1235,25 @@ func extractLedgerKeys(metaXdr string) ([]string, error) {
 		}
 	}
 
-	// 1. Fee processing changes
-	collectChanges(meta.FeeProcessing)
-
-	// 2. Transaction apply processing changes
-	switch meta.TxApplyProcessing.V {
+	// Transaction apply processing changes. (Fee-processing changes come from
+	// Horizon's separate fee_meta_xdr field, which this function doesn't
+	// receive, so there's nothing to collect for fees here.)
+	switch meta.V {
 	case 0:
-		if meta.TxApplyProcessing.Operations != nil {
-			for _, op := range *meta.TxApplyProcessing.Operations {
+		if meta.Operations != nil {
+			for _, op := range *meta.Operations {
 				collectChanges(op.Changes)
 			}
 		}
 	case 1:
-		if v1 := meta.TxApplyProcessing.V1; v1 != nil {
+		if v1 := meta.V1; v1 != nil {
 			collectChanges(v1.TxChanges)
 			for _, op := range v1.Operations {
 				collectChanges(op.Changes)
 			}
 		}
 	case 2:
-		if v2 := meta.TxApplyProcessing.V2; v2 != nil {
+		if v2 := meta.V2; v2 != nil {
 			collectChanges(v2.TxChangesBefore)
 			collectChanges(v2.TxChangesAfter)
 			for _, op := range v2.Operations {
@@ -1251,7 +1261,7 @@ func extractLedgerKeys(metaXdr string) ([]string, error) {
 			}
 		}
 	case 3:
-		if v3 := meta.TxApplyProcessing.V3; v3 != nil {
+		if v3 := meta.V3; v3 != nil {
 			collectChanges(v3.TxChangesBefore)
 			collectChanges(v3.TxChangesAfter)
 			for _, op := range v3.Operations {

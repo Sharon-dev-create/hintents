@@ -101,7 +101,10 @@ create_phase10.py
 *.vcxproj.user
 *.vcxproj.filters
 # MSBuild / VS generated folders
-[Dd]ebug/
+# NOTE: a bare "[Dd]ebug/" pattern was removed here — it recursively matched
+# every directory named "debug" anywhere in the repo (internal/debug,
+# src/debug, erst-ui/src/app/debug, erst-ui/src/app/api/debug), silently
+# keeping new files under erst-ui's debug route out of version control.
 [Rr]elease/
 x64/
 x86/

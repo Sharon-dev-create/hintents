@@ -9,6 +9,7 @@ mod debug_host_fn;
 mod events;
 mod gas_optimizer;
 mod git_detector;
+mod host;
 mod indexer;
 mod ipc;
 mod memory;
@@ -18,6 +19,8 @@ mod snapshot;
 mod source_map_cache;
 mod source_mapper;
 mod stack_trace;
+#[allow(dead_code)]
+mod state;
 mod time;
 mod types;
 mod vm;
@@ -35,7 +38,8 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
+use std::time::Duration;
 use tracing_subscriber::{fmt, EnvFilter};
 
 // Use types::SimulationRequest directly
@@ -192,6 +196,35 @@ mod footprint_conflict_tests {
     }
 }
 
+fn emit_runner_error(error: runner::SimHostError) {
+    let error_code = if matches!(error, runner::SimHostError::Timeout { .. }) {
+        "TIMEOUT"
+    } else {
+        "RUNNER_ERROR"
+    };
+    let response = SimulationResponse {
+        status: "error".to_string(),
+        error: Some(error.to_string()),
+        error_code: Some(error_code.to_string()),
+        lcov_report: None,
+        lcov_report_path: None,
+        events: vec![],
+        diagnostic_events: vec![],
+        categorized_events: vec![],
+        logs: vec![],
+        flamegraph: None,
+        optimization_report: None,
+        budget_usage: None,
+        source_location: None,
+        stack_trace: None,
+        wasm_offset: None,
+        linear_memory_dump: None,
+        asset_anomalies: vec![],
+        pprof_profile: None,
+    };
+    ipc::response::emit_response(&response);
+}
+
 fn panic_info_to_string(panic_info: &(dyn Any + Send)) -> String {
     if let Some(s) = panic_info.downcast_ref::<&str>() {
         s.to_string()
@@ -326,19 +359,9 @@ fn generate_lcov_report(coverage: &CoverageTracker, source_file: &str) -> String
 fn load_ledger_entries(
     sim_host: &mut runner::SimHost,
     entries: &HashMap<String, String>,
+    replay_sequence: Option<u32>,
 ) -> Result<usize, String> {
-    let mut loaded_entries = 0usize;
-    for (key_xdr, entry_xdr) in entries {
-        let key = snapshot::decode_ledger_key(key_xdr)
-            .map_err(|e| format!("Failed to parse LedgerKey XDR: {e}"))?;
-        let entry = snapshot::decode_ledger_entry(entry_xdr)
-            .map_err(|e| format!("Failed to parse LedgerEntry XDR: {e}"))?;
-        sim_host
-            .set_ledger_entry(key, entry)
-            .map_err(|e| format!("Failed to inject ledger entry: {e:?}"))?;
-        loaded_entries += 1;
-    }
-    Ok(loaded_entries)
+    crate::state::load_ledger_entries(sim_host, entries, replay_sequence).map_err(|e| e.to_string())
 }
 
 fn execute_operations(
@@ -354,6 +377,10 @@ fn execute_operations(
         match &op.body {
             OperationBody::InvokeHostFunction(invoke_op) => {
                 logs.push("Executing InvokeHostFunction...".to_string());
+
+                // Reject over-deep authorization trees before executing anything.
+                host::verify_contract_auth(&invoke_op.auth)
+                    .map_err(crate::runner::SimHostError::from)?;
 
                 // Check for signature verification mock
                 if let Some(mock_result) =
@@ -542,13 +569,8 @@ fn main() {
 
     tracing::info!(event = "simulator_started", "Simulator initializing...");
 
-    let mut pprof_guard = profiler::PprofGuard::start(99);
-
     let mut buffer = String::new();
     if let Err(e) = io::stdin().read_to_string(&mut buffer) {
-        let pprof_b64 = pprof_guard
-            .stop()
-            .map(|bytes| base64::engine::general_purpose::STANDARD.encode(&bytes));
         let res = SimulationResponse {
             status: "error".to_string(),
             error: Some(format!("Failed to read stdin: {e}")),
@@ -567,12 +589,40 @@ fn main() {
             wasm_offset: None,
             linear_memory_dump: None,
             asset_anomalies: vec![],
-            pprof_profile: pprof_b64,
+            pprof_profile: None,
         };
         tracing::error!("Failed to read stdin: {}", e);
         ipc::response::emit_response(&res);
         return;
     }
+
+    if !runner::is_timeout_worker() {
+        let timeout = env::var("ERST_SIM_TIMEOUT_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(Duration::from_millis)
+            .unwrap_or_else(|| runner::RunnerConfig::default().timeout());
+        let config = runner::RunnerConfig::default().with_timeout(timeout);
+
+        match runner::run_request_with_timeout(&buffer, config) {
+            Ok(output) => {
+                if let Err(error) = io::stdout().lock().write_all(&output.stdout) {
+                    eprintln!("failed to forward simulator response: {error}");
+                    std::process::exit(1);
+                }
+                if !output.status.success() {
+                    std::process::exit(output.status.code().unwrap_or(1));
+                }
+            }
+            Err(error) => {
+                emit_runner_error(error);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    let mut pprof_guard = profiler::PprofGuard::start(99);
 
     let request: SimulationRequest = match serde_json::from_str(&buffer) {
         Ok(req) => req,
@@ -617,7 +667,9 @@ fn main() {
     let envelope = match base64::engine::general_purpose::STANDARD.decode(&request.envelope_xdr) {
         Ok(bytes) => match soroban_env_host::xdr::TransactionEnvelope::from_xdr(
             bytes,
-            soroban_env_host::xdr::Limits::none(),
+            // Depth-bounded: a crafted, deeply nested authorization tree must
+            // fail to parse rather than overflow the stack during decoding.
+            host::untrusted_xdr_limits(),
         ) {
             Ok(env) => env,
             Err(e) => {
@@ -721,6 +773,12 @@ fn main() {
         .with_calibration(request.resource_calibration.clone())
         .with_memory_limit(request.memory_limit);
     let mut sim_host = runner::SimHost::new(host_config);
+    if let Some(seq) = request.ledger_sequence {
+        if let Err(e) = sim_host.set_ledger_sequence(seq) {
+            send_error(format!("Failed to set ledger sequence: {e}"));
+            return;
+        }
+    }
 
     // --- START: Local WASM Loading Integration (Issue #70) ---
     if let Some(path) = &request.wasm_path {
@@ -752,7 +810,7 @@ fn main() {
 
     let mut loaded_entries_count = 0;
     if let Some(entries) = &resolved_entries {
-        match load_ledger_entries(&mut sim_host, entries) {
+        match load_ledger_entries(&mut sim_host, entries, request.ledger_sequence) {
             Ok(count) => {
                 loaded_entries_count = count;
             }
@@ -1792,8 +1850,69 @@ mod tests {
         );
 
         let mut sim_host = runner::SimHost::new(HostConfig::default());
-        let count = load_ledger_entries(&mut sim_host, &entries).expect("failed to load entries");
+        let count =
+            load_ledger_entries(&mut sim_host, &entries, None).expect("failed to load entries");
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_load_ledger_entries_archived_entry_fails() {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+        use sha2::Digest;
+        use soroban_env_host::xdr::{
+            ContractDataDurability, ContractDataEntry, ContractId, Hash, LedgerEntry,
+            LedgerEntryData, LedgerEntryExt, LedgerKey, LedgerKeyContractData, LedgerKeyTtl,
+            Limits, ScAddress, ScVal, TtlEntry, WriteXdr,
+        };
+
+        let contract_id = Hash([12u8; 32]);
+        let instance_key = LedgerKey::ContractData(LedgerKeyContractData {
+            contract: ScAddress::Contract(ContractId(contract_id.clone())),
+            key: ScVal::LedgerKeyContractInstance,
+            durability: ContractDataDurability::Persistent,
+        });
+        let instance_entry = LedgerEntry {
+            last_modified_ledger_seq: 100,
+            data: LedgerEntryData::ContractData(ContractDataEntry {
+                ext: soroban_env_host::xdr::ExtensionPoint::V0,
+                contract: ScAddress::Contract(ContractId(contract_id)),
+                key: ScVal::LedgerKeyContractInstance,
+                durability: ContractDataDurability::Persistent,
+                val: ScVal::U32(1),
+            }),
+            ext: LedgerEntryExt::V0,
+        };
+
+        let instance_key_xdr = instance_key.to_xdr(Limits::none()).unwrap();
+        let key_hash: [u8; 32] = sha2::Sha256::digest(&instance_key_xdr).into();
+        let ttl_key = LedgerKey::Ttl(LedgerKeyTtl {
+            key_hash: Hash(key_hash),
+        });
+        let ttl_entry = LedgerEntry {
+            last_modified_ledger_seq: 100,
+            data: LedgerEntryData::Ttl(TtlEntry {
+                key_hash: Hash(key_hash),
+                live_until_ledger_seq: 150,
+            }),
+            ext: LedgerEntryExt::V0,
+        };
+
+        let mut entries = HashMap::new();
+        entries.insert(
+            STANDARD.encode(instance_key_xdr),
+            STANDARD.encode(instance_entry.to_xdr(Limits::none()).unwrap()),
+        );
+        entries.insert(
+            STANDARD.encode(ttl_key.to_xdr(Limits::none()).unwrap()),
+            STANDARD.encode(ttl_entry.to_xdr(Limits::none()).unwrap()),
+        );
+
+        let mut sim_host = runner::SimHost::new(HostConfig::default());
+        let result = load_ledger_entries(&mut sim_host, &entries, Some(200));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains(crate::state::INVOKE_HOST_FUNCTION_ENTRY_ARCHIVED));
     }
 
     #[test]
@@ -1863,3 +1982,73 @@ mod tests {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod auth_depth_tests {
+    use super::*;
+    use crate::host::test_support::{chain, entry};
+    use crate::host::MAX_AUTH_DEPTH;
+    use crate::runner::SimHostError;
+    use soroban_env_host::xdr::{
+        ContractId, Hash, HostFunction, InvokeContractArgs, InvokeHostFunctionOp, ScAddress,
+        ScSymbol, SorobanAuthorizationEntry, VecM,
+    };
+
+    fn request() -> SimulationRequest {
+        serde_json::from_value(serde_json::json!({
+            "envelope_xdr": "",
+            "result_meta_xdr": "",
+            "enable_optimization_advisor": false,
+        }))
+        .expect("minimal request should deserialize")
+    }
+
+    fn invoke_op(auth: Vec<SorobanAuthorizationEntry>) -> Operation {
+        Operation {
+            source_account: None,
+            body: OperationBody::InvokeHostFunction(InvokeHostFunctionOp {
+                host_function: HostFunction::InvokeContract(InvokeContractArgs {
+                    contract_address: ScAddress::Contract(ContractId(Hash([1u8; 32]))),
+                    function_name: ScSymbol("f".try_into().unwrap()),
+                    args: VecM::default(),
+                }),
+                auth: auth.try_into().unwrap(),
+            }),
+        }
+    }
+
+    fn run(op: Operation) -> Result<Vec<String>, SimHostError> {
+        let sim_host = runner::SimHost::new(HostConfig::default());
+        execute_operations(
+            &sim_host,
+            &[op],
+            &request(),
+            &mut CoverageTracker::default(),
+        )
+    }
+
+    #[test]
+    fn over_depth_auth_is_rejected_before_execution() {
+        let err = run(invoke_op(vec![entry(chain(MAX_AUTH_DEPTH + 1))]))
+            .expect_err("over-depth tree must fail");
+        // The target contract does not exist, so reaching the host would yield
+        // SimHostError::Host; getting this variant proves the check ran first.
+        assert!(
+            matches!(err, SimHostError::AuthDepthExceeded(_)),
+            "unexpected error: {err:?}"
+        );
+        assert!(err.to_string().contains("maximum of 4 levels"));
+    }
+
+    #[test]
+    fn max_depth_auth_is_not_rejected_by_the_depth_check() {
+        // The missing contract still makes execution fail, but with a host
+        // error rather than an auth-depth error.
+        let err = run(invoke_op(vec![entry(chain(MAX_AUTH_DEPTH))]))
+            .expect_err("nonexistent contract should fail in the host");
+        assert!(
+            !matches!(err, SimHostError::AuthDepthExceeded(_)),
+            "valid-depth tree was rejected: {err:?}"
+        );
+    }
+}

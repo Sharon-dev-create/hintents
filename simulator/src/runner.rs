@@ -9,7 +9,11 @@ use soroban_env_host::{
     xdr::{Hash, HostFunction, Limits, ScErrorCode, ScErrorType, ScVal, WriteXdr},
     DiagnosticLevel, Error as EnvError, Host, HostError, TryIntoVal, Val,
 };
+use std::io::{Read, Write};
+use std::process::{Command, ExitStatus, Stdio};
 use std::rc::Rc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::memory;
 use crate::snapshot::{LedgerSnapshot, SnapshotError};
@@ -22,8 +26,202 @@ pub enum SimHostError {
     Host(#[from] HostError),
     #[error(transparent)]
     Snapshot(#[from] SnapshotError),
+    #[error(transparent)]
+    AuthDepthExceeded(#[from] crate::host::AuthDepthExceeded),
     #[error("host execution panicked: {0}")]
     Panic(String),
+    #[error("simulation exceeded its {limit_ms} ms timeout after {elapsed_ms} ms")]
+    Timeout { elapsed_ms: u64, limit_ms: u64 },
+    #[error("simulation worker failed: {0}")]
+    Worker(String),
+}
+
+/// Configuration for a complete simulator run.
+#[derive(Debug, Clone, Copy)]
+pub struct RunnerConfig {
+    timeout: Duration,
+}
+
+#[derive(Debug)]
+pub struct RunnerOutput {
+    pub status: ExitStatus,
+    pub stdout: Vec<u8>,
+}
+
+impl Default for RunnerConfig {
+    fn default() -> Self {
+        Self {
+            timeout: Duration::from_secs(30),
+        }
+    }
+}
+
+impl RunnerConfig {
+    /// Sets the wall-clock limit for one simulator run.
+    #[must_use]
+    pub const fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Returns the configured wall-clock limit.
+    #[must_use]
+    pub const fn timeout(&self) -> Duration {
+        self.timeout
+    }
+}
+
+const TIMEOUT_WORKER_ENV: &str = "ERST_SIM_TIMEOUT_WORKER";
+
+/// Whether this process was started as the isolated worker for a timed run.
+#[must_use]
+pub fn is_timeout_worker() -> bool {
+    std::env::var_os(TIMEOUT_WORKER_ENV).is_some()
+}
+
+/// Runs this simulator executable in a child process and bounds the complete
+/// request, including contract execution, by `config.timeout()`.
+pub fn run_request_with_timeout(
+    request: &str,
+    config: RunnerConfig,
+) -> Result<RunnerOutput, SimHostError> {
+    let executable = std::env::current_exe()
+        .map_err(|error| SimHostError::Worker(format!("could not locate simulator: {error}")))?;
+    let mut command = Command::new(executable);
+    command
+        .args(std::env::args_os().skip(1))
+        .env(TIMEOUT_WORKER_ENV, "1");
+
+    run_command_with_timeout(command, request.as_bytes(), config.timeout())
+}
+
+fn run_command_with_timeout(
+    mut command: Command,
+    request: &[u8],
+    timeout: Duration,
+) -> Result<RunnerOutput, SimHostError> {
+    let started = Instant::now();
+    if timeout.is_zero() {
+        return Err(SimHostError::Timeout {
+            elapsed_ms: 0,
+            limit_ms: 0,
+        });
+    }
+
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+    let mut child = command
+        .spawn()
+        .map_err(|error| SimHostError::Worker(format!("could not start simulator: {error}")))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| SimHostError::Worker("simulator stdout was not captured".to_owned()))?;
+    let output_reader = thread::Builder::new()
+        .name("erst-sim-output".to_owned())
+        .spawn(move || {
+            let mut output = Vec::new();
+            let mut stdout = stdout;
+            stdout.read_to_end(&mut output).map(|_| output)
+        })
+        .map_err(|error| {
+            let _ = child.kill();
+            let _ = child.wait();
+            SimHostError::Worker(format!("could not capture simulator output: {error}"))
+        })?;
+
+    let stdin = match child.stdin.take() {
+        Some(stdin) => stdin,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = output_reader.join();
+            return Err(SimHostError::Worker(
+                "simulator stdin was not captured".to_owned(),
+            ));
+        }
+    };
+    let request = request.to_vec();
+    let request_writer = thread::Builder::new()
+        .name("erst-sim-input".to_owned())
+        .spawn(move || {
+            let mut stdin = stdin;
+            stdin.write_all(&request)
+        });
+    let request_writer = match request_writer {
+        Ok(writer) => writer,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = output_reader.join();
+            return Err(SimHostError::Worker(format!(
+                "could not send request to simulator: {error}"
+            )));
+        }
+    };
+
+    let status = loop {
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = request_writer.join();
+            let _ = output_reader.join();
+            return Err(SimHostError::Timeout {
+                elapsed_ms: duration_millis(elapsed),
+                limit_ms: duration_millis(timeout),
+            });
+        }
+
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => thread::sleep(
+                timeout
+                    .saturating_sub(elapsed)
+                    .min(Duration::from_millis(10)),
+            ),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = request_writer.join();
+                let _ = output_reader.join();
+                return Err(SimHostError::Worker(format!(
+                    "could not wait for simulator: {error}"
+                )));
+            }
+        }
+    };
+
+    let request_result = request_writer
+        .join()
+        .map_err(|_| SimHostError::Worker("simulator input writer panicked".to_owned()))?;
+    if let Err(error) = request_result {
+        let _ = output_reader.join();
+        return Err(SimHostError::Worker(format!(
+            "could not send request to simulator: {error}"
+        )));
+    }
+
+    let stdout = output_reader
+        .join()
+        .map_err(|_| SimHostError::Worker("simulator output reader panicked".to_owned()))?
+        .map_err(|error| {
+            SimHostError::Worker(format!("could not read simulator output: {error}"))
+        })?;
+    if stdout.is_empty() {
+        return Err(SimHostError::Worker(format!(
+            "simulator exited with {status} without a response"
+        )));
+    }
+
+    Ok(RunnerOutput { status, stdout })
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -272,12 +470,36 @@ impl SimHost {
         let mut footprint_map = FootprintMap::new();
         let mut storage_map = StorageMap::new();
 
+        let mut ttl_by_hash = std::collections::HashMap::new();
+        for (_, entry) in snapshot.iter() {
+            if let soroban_env_host::xdr::LedgerEntryData::Ttl(ref ttl) = entry.data {
+                ttl_by_hash.insert(ttl.key_hash.clone(), ttl.live_until_ledger_seq);
+            }
+        }
+
         for (key_bytes, entry) in snapshot.iter() {
             let key = Rc::new(crate::snapshot::decode_ledger_key(
                 &base64::engine::general_purpose::STANDARD.encode(key_bytes),
             )?);
+            // LedgerKey::Ttl is metadata used for TTL tracking and is attached to contract entries,
+            // not stored directly in host storage map.
+            if matches!(entry.data, soroban_env_host::xdr::LedgerEntryData::Ttl(_))
+                || matches!(*key, soroban_env_host::xdr::LedgerKey::Ttl(_))
+            {
+                continue;
+            }
+            let live_until = match &entry.data {
+                soroban_env_host::xdr::LedgerEntryData::ContractData(_)
+                | soroban_env_host::xdr::LedgerEntryData::ContractCode(_) => {
+                    crate::state::compute_key_hash(&key)
+                        .ok()
+                        .and_then(|h| ttl_by_hash.get(&h).copied())
+                }
+                _ => None,
+            };
             footprint_map = footprint_map.insert(Rc::clone(&key), AccessType::ReadWrite, budget)?;
-            storage_map = storage_map.insert(key, Some((Rc::new(entry.clone()), None)), budget)?;
+            storage_map =
+                storage_map.insert(key, Some((Rc::new(entry.clone()), live_until)), budget)?;
         }
 
         let storage =
@@ -408,6 +630,34 @@ impl SimHost {
         self.clock.reset();
         debug!("reset simulator clock");
     }
+
+    /// Sets the replay ledger sequence number on the host's ledger info.
+    #[allow(dead_code)]
+    pub fn set_ledger_sequence(&self, sequence: u32) -> Result<(), SimHostError> {
+        let mut info = self
+            .inner
+            .with_ledger_info(|li| Ok(li.clone()))
+            .unwrap_or_else(|_| soroban_env_host::LedgerInfo {
+                protocol_version: 21,
+                sequence_number: sequence,
+                timestamp: self.clock.get_clock(),
+                network_id: [0u8; 32],
+                base_reserve: 10,
+                min_temp_entry_ttl: 16,
+                min_persistent_entry_ttl: 4096,
+                max_entry_ttl: 6_312_000,
+            });
+        info.sequence_number = sequence;
+        self.inner.set_ledger_info(info).map_err(SimHostError::Host)
+    }
+
+    /// Returns the current simulated ledger sequence, if configured.
+    #[allow(dead_code)]
+    pub fn get_ledger_sequence(&self) -> Option<u32> {
+        self.inner
+            .with_ledger_info(|li| Ok(li.sequence_number))
+            .ok()
+    }
 }
 
 impl Drop for SimHost {
@@ -439,6 +689,47 @@ mod tests {
         LedgerEntryExt, LedgerKey, LedgerKeyContractData, ScAddress, ScVal,
     };
     use soroban_env_host::EnvBase;
+
+    const TIMEOUT_TEST_SLEEP_ENV: &str = "ERST_SIM_TIMEOUT_TEST_SLEEP";
+
+    #[test]
+    fn timeout_test_worker() {
+        if std::env::var_os(TIMEOUT_TEST_SLEEP_ENV).is_some() {
+            loop {
+                std::hint::spin_loop();
+            }
+        }
+    }
+
+    #[test]
+    fn test_runner_timeout_configuration() {
+        assert_eq!(RunnerConfig::default().timeout(), Duration::from_secs(30));
+        assert_eq!(
+            RunnerConfig::default()
+                .with_timeout(Duration::from_millis(250))
+                .timeout(),
+            Duration::from_millis(250)
+        );
+    }
+
+    #[test]
+    fn test_timed_out_worker_returns_timeout_error() {
+        let executable = std::env::current_exe().expect("test executable should be available");
+        let mut command = Command::new(executable);
+        command
+            .args([
+                "--exact",
+                "runner::tests::timeout_test_worker",
+                "--nocapture",
+            ])
+            .env(TIMEOUT_TEST_SLEEP_ENV, "1");
+
+        let result = run_command_with_timeout(command, b"", Duration::from_millis(100));
+        assert!(matches!(
+            result,
+            Err(SimHostError::Timeout { limit_ms: 100, .. })
+        ));
+    }
 
     #[test]
     fn test_host_initialization() {

@@ -8,10 +8,11 @@
     "start": "next start"
   },
   "dependencies": {
-    "next": "14.2.3",
+    "next": "16.4.3",
     "react": "^18",
     "react-dom": "^18",
-    "lucide-react": "^0.378.0",
+    "lucide-react": "^1.63.0",
+    "motion": "^14.7.1",
     "@stellar/freighter-api": "^2.0.0"
   },
   "devDependencies": {
